@@ -15,13 +15,9 @@
 
   <p>Status: <span id="status">bereit</span></p>
   <audio id="player" controls style="width:100%; display:none;"></audio>
-	<script>
-const player = document.getElementById('player');
-player.addEventListener('error', () => {
-  const e = player.error;
-  console.log('AUDIO ERROR', e?.code, e);
-});
-</script>
+
+	<button onclick="startRecording()">Start native recording</button>
+	
   <pre id="log"></pre>
 
   <script>
@@ -46,6 +42,16 @@ player.addEventListener('error', () => {
 		}).then(r => log('upload status', r.status));
 	  }
 	};
+
+	  const player = document.getElementById('player');
+		player.addEventListener('error', () => {
+  		const e = player.error;
+  		console.log('AUDIO ERROR', e?.code, e);
+		});
+
+	  function startRecording(opts) {
+    window.webkit?.messageHandlers?.recorder?.postMessage({ action: "startNativeRecording" });
+  }
   </script>
 </body>
 </html>
