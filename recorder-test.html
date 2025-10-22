@@ -12,13 +12,6 @@
 </head>
 <body>
   <h1>Recorder Bridge Test</h1>
-  <div>
-	<button onclick="start()">Start</button>
-	<button onclick="pause()">Pause</button>
-	<button onclick="resume()">Resume</button>
-	<button onclick="stop()">Stop</button>
-	<button onclick="cancel()">Cancel</button>
-  </div>
 
   <p>Status: <span id="status">bereit</span></p>
   <audio id="player" controls style="width:100%; display:none;"></audio>
@@ -39,38 +32,13 @@
 		player.style.display = 'block';
 
 		// Beispiel: Upload als Blob (optional)
-		// fetch(evt.url).then(r => r.blob()).then(blob => {
-		//   const form = new FormData();
-		//   form.append('file', blob, `${evt.id}.m4a`);
-		//   return fetch('/upload', { method: 'POST', body: form });
-		// }).then(r => log('upload status', r.status));
+		fetch(evt.url).then(r => r.blob()).then(blob => {
+		  const form = new FormData();
+		   form.append('file', blob, `${evt.id}.m4a`);
+		   return fetch('/upload', { method: 'POST', body: form });
+		}).then(r => log('upload status', r.status));
 	  }
 	};
-
-	// Falls Bootstrap-Script nicht injiziert wurde (sollte es aber):
-	if (!window.startRecording) {
-	  window.startRecording = (opts) => window.webkit?.messageHandlers?.recorder?.postMessage({action:'start', ...opts});
-	  window.pauseRecording  = () => window.webkit?.messageHandlers?.recorder?.postMessage({action:'pause'});
-	  window.resumeRecording = () => window.webkit?.messageHandlers?.recorder?.postMessage({action:'resume'});
-	  window.stopRecording   = () => window.webkit?.messageHandlers?.recorder?.postMessage({action:'stop'});
-	  window.cancelRecording = () => window.webkit?.messageHandlers?.recorder?.postMessage({action:'cancel'});
-	}
-
-	// UI-Handler
-	function start(){ window.startRecording({ maxSeconds: 0 }); }
-	function pause(){ window.pauseRecording(); }
-	function resume(){ window.resumeRecording(); }
-	function stop(){ window.stopRecording(); }
-	function cancel(){ window.cancelRecording(); }
-
-	// Optional: Flag für dein altes Web-UI
-	window.isRecording = false;
-	const origStart = window.startRecording;
-	window.startRecording = (opts) => { window.isRecording = true; origStart(opts); }
-	window.pauseRecording = () => { window.isRecording = false; window.webkit.messageHandlers.recorder.postMessage({action:'pause'}); }
-	window.resumeRecording = () => { window.isRecording = true; window.webkit.messageHandlers.recorder.postMessage({action:'resume'}); }
-	window.stopRecording = () => { window.isRecording = false; window.webkit.messageHandlers.recorder.postMessage({action:'stop'}); }
-	window.cancelRecording = () => { window.isRecording = false; window.webkit.messageHandlers.recorder.postMessage({action:'cancel'}); }
   </script>
 </body>
 </html>
