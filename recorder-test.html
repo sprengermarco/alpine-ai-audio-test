@@ -3,60 +3,91 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Recorder Bridge Test</title>
+  <title>Recorder Bridge Test (fetch only)</title>
   <style>
-	body { font-family: system-ui, -apple-system; margin: 24px; }
-	button { padding: 10px 14px; margin: 4px; border-radius: 10px; }
-	#log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    body { font-family: system-ui, -apple-system; margin: 24px; }
+    button { padding: 10px 14px; margin: 4px; border-radius: 10px; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   </style>
 </head>
 <body>
-  <h1>Recorder Bridge Test</h1>
+  <h1>Recorder Bridge Test (fetch only)</h1>
 
   <p>Status: <span id="status">bereit</span></p>
-  <audio id="player" controls style="width:100%; display:none;"></audio>
-
-	<button onclick="startRecording()">Start native recording</button>
-	
+  <button onclick="startRecording()">Start native recording</button>
   <pre id="log"></pre>
 
   <script>
-	const $ = sel => document.querySelector(sel);
-	function log(...args){ $('#log').textContent += args.join(' ') + '\n'; }
+    const $ = sel => document.querySelector(sel);
+    function log(...args){ $('#log').textContent += args.join(' ') + '\n'; }
 
-	// Events vom nativen Code:
-	window.onRecordingEvent = (evt) => {
-	  log('event:', JSON.stringify(evt));
-	  $('#status').textContent = evt.type;
+    // Helper: fetch with XHR fallback (WKWebView can be picky with custom schemes)
+    async function fetchBlobCustom(url) {
+      // Try fetch first
+      try {
+        const resp = await fetch(url, { cache: 'no-store' });
+        log('fetch -> ok:', resp.ok, 'status:', resp.status, 'type:', resp.type);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        return await resp.blob();
+      } catch (e) {
+        log('fetch failed ->', e && e.message || e);
+        // Fallback: XHR
+        return await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET', url, true);
+          xhr.responseType = 'blob';
+          xhr.onload = () => resolve(xhr.response);
+          xhr.onerror = () => reject(new Error('XHR failed'));
+          xhr.send();
+        });
+      }
+    }
 
-	  if (evt.type === 'finished' && evt.url) {
-		const player = $('#player');
-		player.src = evt.url;    // <- app://recordings/<id>.m4a
-		player.style.display = 'block';
+    // Optional: small microtask delay (avoids race just after "finished")
+    const nextTick = () => Promise.resolve();
 
-		// Beispiel: Upload als Blob (optional)
-		fetch(evt.url).then(r => r.blob()).then(blob => {
-		  const form = new FormData();
-		   form.append('file', blob, `${evt.id}.m4a`);
-		   return fetch('/upload', { method: 'POST', body: form });
-		}).then(r => log('upload status', r.status));
-	  }
-	};
+    // Native -> Web events
+    window.onRecordingEvent = async (evt) => {
+      log('event:', JSON.stringify(evt));
+      $('#status').textContent = evt.type;
 
-	  const player = document.getElementById('player');
-		player.addEventListener('error', () => {
-  		const e = player.error;
-  		console.log('AUDIO ERROR', e?.code, e);
-		});
+      if (evt.type === 'finished' && evt.url) {
+        try {
+          log('finished -> fetching blob from', evt.url);
 
-	  function startRecording(opts) {
-		  if (window.webkit?.messageHandlers?.recorder) {
-  			window.webkit.messageHandlers.recorder.postMessage({ action: "startNativeRecording" });
-		} else if (window.AndroidBridge) {
-  			window.AndroidBridge.postMessage(JSON.stringify({ action: "startNativeRecording" }));
-		}
-  }
+          // tiny delay to ensure native registry is ready (usually not needed, but harmless)
+          await nextTick();
+
+          const blob = await fetchBlobCustom(evt.url);
+          log(`blob fetched: size=${blob?.size} type=${blob?.type || '(unknown)'}`);
+
+          // Example: create a File and (optionally) upload
+          const file = new File([blob], `${evt.id || 'recording'}.m4a`, { type: blob.type || 'audio/mp4' });
+          log(`file ready: name=${file.name} size=${file.size}`);
+
+          // --- Optional upload example ---
+          // const form = new FormData();
+          // form.append('file', file);
+          // const r = await fetch('/upload', { method: 'POST', body: form });
+          // log('upload status:', r.status);
+
+        } catch (err) {
+          log('ERROR fetching blob:', err && err.message || err);
+        }
+      }
+    };
+
+    function startRecording() {
+      if (window.webkit?.messageHandlers?.recorder) {
+        window.webkit.messageHandlers.recorder.postMessage({ action: "startNativeRecording" });
+        log('startNativeRecording sent (iOS)');
+      } else if (window.AndroidBridge) {
+        window.AndroidBridge.postMessage(JSON.stringify({ action: "startNativeRecording" }));
+        log('startNativeRecording sent (Android)');
+      } else {
+        log('No native bridge available');
+      }
+    }
   </script>
 </body>
 </html>
-
