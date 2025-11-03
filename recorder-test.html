@@ -50,7 +50,11 @@
 		});
 
 	  function startRecording(opts) {
-    window.webkit?.messageHandlers?.recorder?.postMessage({ action: "startNativeRecording" });
+		  if (window.webkit?.messageHandlers?.recorder) {
+  			window.webkit.messageHandlers.recorder.postMessage({ action: "startNativeRecording" });
+		} else if (window.AndroidBridge) {
+  			window.AndroidBridge.postMessage(JSON.stringify({ action: "startNativeRecording" }));
+		}
   }
   </script>
 </body>
