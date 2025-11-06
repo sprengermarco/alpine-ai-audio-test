@@ -3,24 +3,40 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Recorder Bridge Test (fetch & play)</title>
+  <title>Recorder Bridge Test (full)</title>
   <style>
     body { font-family: system-ui, -apple-system; margin: 24px; }
-    button { padding: 10px 14px; margin: 4px; border-radius: 10px; }
-    #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    button { padding: 10px 14px; margin: 4px; border-radius: 10px; cursor: pointer; }
+    #log { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; background: #fafafa; border: 1px solid #eee; padding: 8px; }
     #player { width: 100%; display: none; margin-top: 12px; }
     #download { display: none; margin-left: 8px; }
     .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .kv { margin-top: 8px; font-size: 14px; }
+    .kv code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
   </style>
 </head>
 <body>
-  <h1>Recorder Bridge Test (fetch & play)</h1>
+  <h1>Recorder Bridge Test (full)</h1>
 
   <div class="row">
     <span>Status: <strong id="status">bereit</strong></span>
-    <button onclick="startRecording()">Start native recording</button>
-    <button onclick="clearPlayer()">Clear</button>
+    <button onclick="startNative()">Start</button>
+    <button onclick="resumeNative()">Resume</button>
+    <button onclick="clearPlayer()">Clear Player</button>
     <a id="download" download>Download file</a>
+  </div>
+
+  <div class="kv">
+    Letzte ID: <code id="lastId">–</code> |
+    Letzte URL: <code id="lastUrl">–</code> |
+    Dauer: <code id="lastDur">–</code> |
+    Offset (resumed): <code id="lastOffset">–</code>
+  </div>
+
+  <div class="row" style="margin-top:8px;">
+    <button onclick="fetchLast()">Fetch & Play (Last)</button>
+    <button onclick="cleanLast()">Clean (delete on device)</button>
+    <button onclick="copyLastUrl()">Copy Last URL</button>
   </div>
 
   <audio id="player" controls></audio>
@@ -30,9 +46,15 @@
     const $ = sel => document.querySelector(sel);
     const log = (...args) => { $('#log').textContent += args.join(' ') + '\n'; };
 
-    // Small helper: fetch with XHR fallback (WKWebView can be picky on some setups)
+    let lastEvent = null;  // store last finished/resumed event
+    let lastId = null;
+    let lastUrl = null;
+    let lastDuration = null;
+    let lastOffset = null;
+
+    // ---- helpers ----
     async function fetchBlobCustom(url) {
-      // 1) Try fetch
+      // Try fetch first
       try {
         const resp = await fetch(url, { cache: 'no-store' });
         log('[fetch] ok:', resp.ok, 'status:', resp.status, 'type:', resp.type);
@@ -40,7 +62,7 @@
         return await resp.blob();
       } catch (e) {
         log('[fetch] failed ->', e?.message || e);
-        // 2) Fallback: XHR
+        // Fallback: XHR
         return await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open('GET', url, true);
@@ -52,10 +74,6 @@
       }
     }
 
-    // Optional: avoid race right after "finished"
-    const nextTick = () => Promise.resolve();
-
-    // Build a short preview of first bytes (for debugging)
     async function describeBlob(blob) {
       if (!blob) return 'n/a';
       const head = await blob.slice(0, 16).arrayBuffer();
@@ -64,74 +82,138 @@
       return `size=${blob.size}, type=${blob.type || '(unknown)'}, head=[${hex}]`;
     }
 
-    // Native -> Web events
-    window.onRecordingEvent = async (evt) => {
-      log('[event]', JSON.stringify(evt));
-      $('#status').textContent = evt.type;
+    function setLastMeta({ id, url, duration, offset }) {
+      if (id)        { lastId = id; $('#lastId').textContent = id; }
+      if (url)       { lastUrl = url; $('#lastUrl').textContent = url; }
+      if (duration !== undefined) { lastDuration = duration; $('#lastDur').textContent = String(duration); }
+      if (offset !== undefined)   { lastOffset = offset; $('#lastOffset').textContent = String(offset); }
+    }
 
-      if (evt.type === 'finished' && evt.url) {
-        try {
-          log('finished -> fetching:', evt.url);
-          await nextTick();
+    async function playBlob(blob, nameHint = 'recording.m4a') {
+      const url = URL.createObjectURL(blob);
+      const player = $('#player');
+      player.src = url;
+      player.style.display = 'block';
 
-          // Fetch into a Blob
-          const blob = await fetchBlobCustom(evt.url);
-          log('blob fetched:', await describeBlob(blob));
+      // Download link
+      const dl = $('#download');
+      dl.href = url;
+      dl.download = nameHint;
+      dl.textContent = 'Download';
+      dl.style.display = 'inline-block';
 
-          // Feed <audio> with an object URL
-          const url = URL.createObjectURL(blob);
-          const player = $('#player');
-          player.src = url;
-          player.style.display = 'block';
+      // try autoplay
+      try { await player.play(); } catch (e) { log('player.play blocked:', e?.message || e); }
 
-          // Optional: auto-play (can be blocked by autoplay policies)
-          try { await player.play(); } catch (e) { log('player.play blocked:', e?.message || e); }
+      log('object URL set on player & download link ready.');
+    }
 
-          // Expose a download link
-          const dl = $('#download');
-          dl.href = url;
-          dl.download = `${evt.id || 'recording'}.m4a`;
-          dl.textContent = 'Download';
-          dl.style.display = 'inline-block';
-
-          log('object URL set on player & download link ready.');
-
-        } catch (err) {
-          log('ERROR fetching blob:', err?.message || err);
-        }
-      }
-    };
-
-    function startRecording() {
+    // ---- bridge actions ----
+    function startNative() {
       if (window.webkit?.messageHandlers?.recorder) {
         window.webkit.messageHandlers.recorder.postMessage({ action: "startNativeRecording" });
-        log('startNativeRecording sent (iOS)');
-      } else if (window.AndroidBridge) {
-        window.AndroidBridge.postMessage(JSON.stringify({ action: "startNativeRecording" }));
-        log('startNativeRecording sent (Android)');
+        log('startNativeRecording sent');
       } else {
-        log('No native bridge available');
+        log('No native bridge');
       }
+    }
+
+    function resumeNative() {
+      if (window.webkit?.messageHandlers?.recorder) {
+        window.webkit.messageHandlers.recorder.postMessage({ action: "resumeNativeRecording" });
+        log('resumeNativeRecording sent');
+      } else {
+        log('No native bridge');
+      }
+    }
+
+    function cleanLast() {
+      if (!lastId) { log('No lastId to clean'); return; }
+      if (window.webkit?.messageHandlers?.recorder) {
+        window.webkit.messageHandlers.recorder.postMessage({ action: "cleanNativeRecording", id: lastId });
+        log('cleanNativeRecording sent for', lastId);
+      } else {
+        log('No native bridge');
+      }
+    }
+
+    async function fetchLast() {
+      if (!lastUrl) { log('No lastUrl to fetch'); return; }
+      log('Fetch last ->', lastUrl);
+      try {
+        const blob = await fetchBlobCustom(lastUrl);
+        log('blob fetched:', await describeBlob(blob));
+        await playBlob(blob, `${lastId || 'recording'}.m4a`);
+      } catch (e) {
+        log('ERROR fetching last:', e?.message || e);
+      }
+    }
+
+    function copyLastUrl() {
+      if (!lastUrl) return;
+      navigator.clipboard?.writeText(lastUrl).then(
+        () => log('Last URL copied'),
+        () => log('Clipboard copy failed')
+      );
     }
 
     function clearPlayer() {
       const player = $('#player');
       const dl = $('#download');
-      if (player.src) {
-        try { URL.revokeObjectURL(player.src); } catch (_) {}
-      }
+      if (player.src) { try { URL.revokeObjectURL(player.src); } catch(_){} }
       player.removeAttribute('src');
       player.style.display = 'none';
       dl.removeAttribute('href');
       dl.style.display = 'none';
-      $('#log').textContent += 'cleared player/download\n';
+      log('cleared player/download');
     }
 
-    // Log <audio> errors for visibility
-    $('#player').addEventListener('error', () => {
-      const e = $('#player').error;
-      log('AUDIO ERROR', e?.code, e ? JSON.stringify(e, Object.getOwnPropertyNames(e)) : '');
-    });
+    // ---- native -> web events ----
+    window.onRecordingEvent = async (evt) => {
+      log('[event]', JSON.stringify(evt));
+      $('#status').textContent = evt.type;
+
+      switch (evt.type) {
+        case 'started':
+          setLastMeta({ id: evt.id });
+          break;
+
+        case 'resumed':
+          // expect evt.id + evt.offset from native
+          setLastMeta({ id: evt.id, offset: evt.offset });
+          break;
+
+        case 'finished':
+          // keep last id/url/duration
+          setLastMeta({ id: evt.id, url: evt.url, duration: evt.duration });
+          // auto fetch & play to verify
+          try {
+            log('finished -> fetching:', evt.url);
+            const blob = await fetchBlobCustom(evt.url);
+            log('blob fetched:', await describeBlob(blob));
+            await playBlob(blob, `${evt.id || 'recording'}.m4a`);
+          } catch (e) {
+            log('ERROR fetching blob:', e?.message || e);
+          }
+          break;
+
+        case 'cleaned':
+          // reset meta when device file was deleted
+          if (evt.id === lastId) {
+            log('cleaned on device, clearing meta');
+            setLastMeta({ id: '–', url: '–', duration: '–', offset: '–' });
+            lastId = lastUrl = lastDuration = lastOffset = null;
+          }
+          break;
+
+        case 'paused':
+        case 'interrupted':
+        case 'routeChange':
+        case 'error':
+          // just log
+          break;
+      }
+    };
   </script>
 </body>
 </html>
