@@ -3,35 +3,44 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Recorder Bridge Test (fetch only)</title>
+  <title>Recorder Bridge Test (fetch & play)</title>
   <style>
     body { font-family: system-ui, -apple-system; margin: 24px; }
     button { padding: 10px 14px; margin: 4px; border-radius: 10px; }
     #log { white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    #player { width: 100%; display: none; margin-top: 12px; }
+    #download { display: none; margin-left: 8px; }
+    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
-  <h1>Recorder Bridge Test (fetch only)</h1>
+  <h1>Recorder Bridge Test (fetch & play)</h1>
 
-  <p>Status: <span id="status">bereit</span></p>
-  <button onclick="startRecording()">Start native recording</button>
+  <div class="row">
+    <span>Status: <strong id="status">bereit</strong></span>
+    <button onclick="startRecording()">Start native recording</button>
+    <button onclick="clearPlayer()">Clear</button>
+    <a id="download" download>Download file</a>
+  </div>
+
+  <audio id="player" controls></audio>
   <pre id="log"></pre>
 
   <script>
     const $ = sel => document.querySelector(sel);
-    function log(...args){ $('#log').textContent += args.join(' ') + '\n'; }
+    const log = (...args) => { $('#log').textContent += args.join(' ') + '\n'; };
 
-    // Helper: fetch with XHR fallback (WKWebView can be picky with custom schemes)
+    // Small helper: fetch with XHR fallback (WKWebView can be picky on some setups)
     async function fetchBlobCustom(url) {
-      // Try fetch first
+      // 1) Try fetch
       try {
         const resp = await fetch(url, { cache: 'no-store' });
-        log('fetch -> ok:', resp.ok, 'status:', resp.status, 'type:', resp.type);
+        log('[fetch] ok:', resp.ok, 'status:', resp.status, 'type:', resp.type);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return await resp.blob();
       } catch (e) {
-        log('fetch failed ->', e && e.message || e);
-        // Fallback: XHR
+        log('[fetch] failed ->', e?.message || e);
+        // 2) Fallback: XHR
         return await new Promise((resolve, reject) => {
           const xhr = new XMLHttpRequest();
           xhr.open('GET', url, true);
@@ -43,36 +52,52 @@
       }
     }
 
-    // Optional: small microtask delay (avoids race just after "finished")
+    // Optional: avoid race right after "finished"
     const nextTick = () => Promise.resolve();
+
+    // Build a short preview of first bytes (for debugging)
+    async function describeBlob(blob) {
+      if (!blob) return 'n/a';
+      const head = await blob.slice(0, 16).arrayBuffer();
+      const bytes = new Uint8Array(head);
+      const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      return `size=${blob.size}, type=${blob.type || '(unknown)'}, head=[${hex}]`;
+    }
 
     // Native -> Web events
     window.onRecordingEvent = async (evt) => {
-      log('event:', JSON.stringify(evt));
+      log('[event]', JSON.stringify(evt));
       $('#status').textContent = evt.type;
 
       if (evt.type === 'finished' && evt.url) {
         try {
-          log('finished -> fetching blob from', evt.url);
-
-          // tiny delay to ensure native registry is ready (usually not needed, but harmless)
+          log('finished -> fetching:', evt.url);
           await nextTick();
 
+          // Fetch into a Blob
           const blob = await fetchBlobCustom(evt.url);
-          log(`blob fetched: size=${blob?.size} type=${blob?.type || '(unknown)'}`);
+          log('blob fetched:', await describeBlob(blob));
 
-          // Example: create a File and (optionally) upload
-          const file = new File([blob], `${evt.id || 'recording'}.m4a`, { type: blob.type || 'audio/mp4' });
-          log(`file ready: name=${file.name} size=${file.size}`);
+          // Feed <audio> with an object URL
+          const url = URL.createObjectURL(blob);
+          const player = $('#player');
+          player.src = url;
+          player.style.display = 'block';
 
-          // --- Optional upload example ---
-          // const form = new FormData();
-          // form.append('file', file);
-          // const r = await fetch('/upload', { method: 'POST', body: form });
-          // log('upload status:', r.status);
+          // Optional: auto-play (can be blocked by autoplay policies)
+          try { await player.play(); } catch (e) { log('player.play blocked:', e?.message || e); }
+
+          // Expose a download link
+          const dl = $('#download');
+          dl.href = url;
+          dl.download = `${evt.id || 'recording'}.m4a`;
+          dl.textContent = 'Download';
+          dl.style.display = 'inline-block';
+
+          log('object URL set on player & download link ready.');
 
         } catch (err) {
-          log('ERROR fetching blob:', err && err.message || err);
+          log('ERROR fetching blob:', err?.message || err);
         }
       }
     };
@@ -88,6 +113,25 @@
         log('No native bridge available');
       }
     }
+
+    function clearPlayer() {
+      const player = $('#player');
+      const dl = $('#download');
+      if (player.src) {
+        try { URL.revokeObjectURL(player.src); } catch (_) {}
+      }
+      player.removeAttribute('src');
+      player.style.display = 'none';
+      dl.removeAttribute('href');
+      dl.style.display = 'none';
+      $('#log').textContent += 'cleared player/download\n';
+    }
+
+    // Log <audio> errors for visibility
+    $('#player').addEventListener('error', () => {
+      const e = $('#player').error;
+      log('AUDIO ERROR', e?.code, e ? JSON.stringify(e, Object.getOwnPropertyNames(e)) : '');
+    });
   </script>
 </body>
 </html>
