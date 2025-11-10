@@ -13,6 +13,11 @@
     .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .kv { margin-top: 8px; font-size: 14px; }
     .kv code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
+    /* Volume graph */
+    #volWrap { margin: 16px 0 8px; }
+    #volCanvas { width: 100%; height: 100px; display: block; border: 1px solid #eee; background: #fff; border-radius: 8px; }
+    #volMeta { font-size: 12px; color: #555; margin-top: 4px; display: flex; gap: 10px; }
+    #volMeta code { background: #f3f3f3; padding: 0 6px; border-radius: 6px; }
   </style>
 </head>
 <body>
@@ -39,6 +44,16 @@
     <button onclick="copyLastUrl()">Copy Last URL</button>
   </div>
 
+  <!-- Live volume graph -->
+  <div id="volWrap">
+    <canvas id="volCanvas"></canvas>
+    <div id="volMeta">
+      <span>Level: <code id="volLevel">–</code></span>
+      <span>avg dBFS: <code id="volAvg">–</code></span>
+      <span>peak dBFS: <code id="volPeak">–</code></span>
+    </div>
+  </div>
+
   <audio id="player" controls></audio>
   <pre id="log"></pre>
 
@@ -51,6 +66,75 @@
     let lastUrl = null;
     let lastDuration = null;
     let lastOffset = null;
+
+    // ---- volume graph state ----
+    const volCanvas = $('#volCanvas');
+    const volCtx = volCanvas.getContext('2d');
+    const volLevelEl = $('#volLevel');
+    const volAvgEl = $('#volAvg');
+    const volPeakEl = $('#volPeak');
+
+    const VOL_MAX_POINTS = 300; // ~30s at 10Hz, ~5m at 1Hz, etc.
+    const volData = []; // array of { level, avgDb, peakDb }
+    let recordingActive = false;
+
+    function resizeCanvasToDisplaySize(canvas) {
+      const { clientWidth, clientHeight } = canvas;
+      if (canvas.width !== clientWidth || canvas.height !== clientHeight) {
+        canvas.width = clientWidth;
+        canvas.height = clientHeight;
+      }
+    }
+
+    function drawVolumeCurve() {
+      resizeCanvasToDisplaySize(volCanvas);
+      const w = volCanvas.width, h = volCanvas.height;
+      volCtx.clearRect(0, 0, w, h);
+
+      // grid lines (25%, 50%, 75%)
+      volCtx.lineWidth = 1;
+      volCtx.globalAlpha = 0.3;
+      [0.25, 0.5, 0.75].forEach(p => {
+        const y = h - p * h;
+        volCtx.beginPath();
+        volCtx.moveTo(0, y);
+        volCtx.lineTo(w, y);
+        volCtx.stroke();
+      });
+      volCtx.globalAlpha = 1;
+
+      // no data yet
+      if (volData.length < 2) return;
+
+      // map points across width
+      const step = w / (VOL_MAX_POINTS - 1);
+      volCtx.beginPath();
+      volCtx.lineWidth = 2;
+
+      // draw as a simple line (0..1 mapped to bottom..top)
+      for (let i = 0; i < volData.length; i++) {
+        const x = i * step;
+        const y = h - (Math.max(0, Math.min(1, volData[i].level)) * h);
+        if (i === 0) volCtx.moveTo(x, y);
+        else volCtx.lineTo(x, y);
+      }
+      volCtx.stroke();
+
+      // baseline label
+      volCtx.font = '12px system-ui, -apple-system';
+      volCtx.fillText(recordingActive ? 'Live' : 'Paused', 8, 14);
+    }
+
+    function pushVolumeSample(sample) {
+      volData.push(sample);
+      if (volData.length > VOL_MAX_POINTS) volData.shift();
+      volLevelEl.textContent = sample.level.toFixed(3);
+      volAvgEl.textContent = Number(sample.avgDb).toFixed(1);
+      volPeakEl.textContent = Number(sample.peakDb).toFixed(1);
+      drawVolumeCurve();
+    }
+
+    window.addEventListener('resize', drawVolumeCurve);
 
     // ---- helpers ----
     async function fetchBlobCustom(url) {
@@ -174,17 +258,37 @@
       $('#status').textContent = evt.type;
 
       switch (evt.type) {
+        case 'volume':
+          // Expect evt.level in [0,1], evt.avgDb, evt.peakDb (dBFS)
+          if (recordingActive && typeof evt.level === 'number') {
+            pushVolumeSample({
+              level: Math.max(0, Math.min(1, Number(evt.level))),
+              avgDb: evt.avgDb ?? null,
+              peakDb: evt.peakDb ?? null
+            });
+          }
+          break;
+
         case 'started':
+          recordingActive = true;
+          volData.length = 0; // clear old curve
+          drawVolumeCurve();
           setLastMeta({ id: evt.id });
           break;
 
         case 'resumed':
-          // expect evt.id + evt.offset from native
+          recordingActive = true;
+          // keep existing curve if you want a continuous display
           setLastMeta({ id: evt.id, offset: evt.offset });
           break;
 
+        case 'paused':
+        case 'interrupted':
+          recordingActive = false;
+          break;
+
         case 'finished':
-          // keep last id/url/duration
+          recordingActive = false;
           setLastMeta({ id: evt.id, url: evt.url, duration: evt.duration });
           // auto fetch & play to verify
           try {
@@ -197,6 +301,11 @@
           }
           break;
 
+        case 'cancelled':
+        case 'error':
+          recordingActive = false;
+          break;
+
         case 'cleaned':
           // reset meta when device file was deleted
           if (evt.id === lastId) {
@@ -206,14 +315,14 @@
           }
           break;
 
-        case 'paused':
-        case 'interrupted':
         case 'routeChange':
-        case 'error':
           // just log
           break;
       }
     };
+
+    // initial draw
+    drawVolumeCurve();
   </script>
 </body>
 </html>
