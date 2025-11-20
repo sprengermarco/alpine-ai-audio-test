@@ -1,328 +1,48 @@
-<!doctype html>
-<html lang="de">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Recorder Bridge Test (full)</title>
+  <meta charset="UTF-8">
+  <title>App Version Test</title>
   <style>
-    body { font-family: system-ui, -apple-system; margin: 24px; }
-    button { padding: 10px 14px; margin: 4px; border-radius: 10px; cursor: pointer; }
-    #log { white-space: pre-wrap; font-family: ui-monospace, Menlo, monospace; background: #fafafa; border: 1px solid #eee; padding: 8px; }
-    #player { width: 100%; display: none; margin-top: 12px; }
-    #download { display: none; margin-left: 8px; }
-    .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .kv { margin-top: 8px; font-size: 14px; }
-    .kv code { background: #f3f3f3; padding: 2px 6px; border-radius: 6px; }
-    /* Volume graph */
-    #volWrap { margin: 16px 0 8px; }
-    #volCanvas { width: 100%; height: 100px; display: block; border: 1px solid #eee; background: #fff; border-radius: 8px; }
-    #volMeta { font-size: 12px; color: #555; margin-top: 4px; display: flex; gap: 10px; }
-    #volMeta code { background: #f3f3f3; padding: 0 6px; border-radius: 6px; }
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+    }
+    .info {
+      padding: 10px;
+      background: #f2f2f2;
+      border-radius: 8px;
+      margin-top: 10px;
+    }
   </style>
 </head>
 <body>
-  <h1>Recorder Bridge Test (full)</h1>
 
-  <div class="row">
-    <span>Status: <strong id="status">bereit</strong></span>
-    <button onclick="startNative()">Start</button>
-    <button onclick="resumeNative()">Resume</button>
-    <button onclick="clearPlayer()">Clear Player</button>
-    <a id="download" download>Download file</a>
-  </div>
+  <h1>App Version Test</h1>
 
-  <div class="kv">
-    Letzte ID: <code id="lastId">–</code> |
-    Letzte URL: <code id="lastUrl">–</code> |
-    Dauer: <code id="lastDur">–</code> |
-    Offset (resumed): <code id="lastOffset">–</code>
-  </div>
-
-  <div class="row" style="margin-top:8px;">
-    <button onclick="fetchLast()">Fetch & Play (Last)</button>
-    <button onclick="cleanLast()">Clean (delete on device)</button>
-    <button onclick="copyLastUrl()">Copy Last URL</button>
-  </div>
-
-  <!-- Live volume graph -->
-  <div id="volWrap">
-    <canvas id="volCanvas"></canvas>
-    <div id="volMeta">
-      <span>Level: <code id="volLevel">–</code></span>
-      <span>avg dBFS: <code id="volAvg">–</code></span>
-      <span>peak dBFS: <code id="volPeak">–</code></span>
-    </div>
-  </div>
-
-  <audio id="player" controls></audio>
-  <pre id="log"></pre>
+  <div id="status" class="info">Checking…</div>
 
   <script>
-    const $ = sel => document.querySelector(sel);
-    const log = (...args) => { $('#log').textContent += args.join(' ') + '\n'; };
+    function showAppInfo() {
+      const el = document.getElementById('status');
 
-    let lastEvent = null;  // store last finished/resumed event
-    let lastId = null;
-    let lastUrl = null;
-    let lastDuration = null;
-    let lastOffset = null;
-
-    // ---- volume graph state ----
-    const volCanvas = $('#volCanvas');
-    const volCtx = volCanvas.getContext('2d');
-    const volLevelEl = $('#volLevel');
-    const volAvgEl = $('#volAvg');
-    const volPeakEl = $('#volPeak');
-
-    const VOL_MAX_POINTS = 300; // ~30s at 10Hz, ~5m at 1Hz, etc.
-    const volData = []; // array of { level, avgDb, peakDb }
-    let recordingActive = false;
-
-    function resizeCanvasToDisplaySize(canvas) {
-      const { clientWidth, clientHeight } = canvas;
-      if (canvas.width !== clientWidth || canvas.height !== clientHeight) {
-        canvas.width = clientWidth;
-        canvas.height = clientHeight;
-      }
-    }
-
-    function drawVolumeCurve() {
-      resizeCanvasToDisplaySize(volCanvas);
-      const w = volCanvas.width, h = volCanvas.height;
-      volCtx.clearRect(0, 0, w, h);
-
-      // grid lines (25%, 50%, 75%)
-      volCtx.lineWidth = 1;
-      volCtx.globalAlpha = 0.3;
-      [0.25, 0.5, 0.75].forEach(p => {
-        const y = h - p * h;
-        volCtx.beginPath();
-        volCtx.moveTo(0, y);
-        volCtx.lineTo(w, y);
-        volCtx.stroke();
-      });
-      volCtx.globalAlpha = 1;
-
-      // no data yet
-      if (volData.length < 2) return;
-
-      // map points across width
-      const step = w / (VOL_MAX_POINTS - 1);
-      volCtx.beginPath();
-      volCtx.lineWidth = 2;
-
-      // draw as a simple line (0..1 mapped to bottom..top)
-      for (let i = 0; i < volData.length; i++) {
-        const x = i * step;
-        const y = h - (Math.max(0, Math.min(1, volData[i].level)) * h);
-        if (i === 0) volCtx.moveTo(x, y);
-        else volCtx.lineTo(x, y);
-      }
-      volCtx.stroke();
-
-      // baseline label
-      volCtx.font = '12px system-ui, -apple-system';
-      volCtx.fillText(recordingActive ? 'Live' : 'Paused', 8, 14);
-    }
-
-    function pushVolumeSample(sample) {
-      volData.push(sample);
-      if (volData.length > VOL_MAX_POINTS) volData.shift();
-      volLevelEl.textContent = sample.level.toFixed(3);
-      volAvgEl.textContent = Number(sample.avgDb).toFixed(1);
-      volPeakEl.textContent = Number(sample.peakDb).toFixed(1);
-      drawVolumeCurve();
-    }
-
-    window.addEventListener('resize', drawVolumeCurve);
-
-    // ---- helpers ----
-    async function fetchBlobCustom(url) {
-      // Try fetch first
-      try {
-        const resp = await fetch(url, { cache: 'no-store' });
-        log('[fetch] ok:', resp.ok, 'status:', resp.status, 'type:', resp.type);
-        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        return await resp.blob();
-      } catch (e) {
-        log('[fetch] failed ->', e?.message || e);
-        // Fallback: XHR
-        return await new Promise((resolve, reject) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('GET', url, true);
-          xhr.responseType = 'blob';
-          xhr.onload = () => resolve(xhr.response);
-          xhr.onerror = () => reject(new Error('XHR failed'));
-          xhr.send();
-        });
-      }
-    }
-
-    async function describeBlob(blob) {
-      if (!blob) return 'n/a';
-      const head = await blob.slice(0, 16).arrayBuffer();
-      const bytes = new Uint8Array(head);
-      const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      return `size=${blob.size}, type=${blob.type || '(unknown)'}, head=[${hex}]`;
-    }
-
-    function setLastMeta({ id, url, duration, offset }) {
-      if (id)        { lastId = id; $('#lastId').textContent = id; }
-      if (url)       { lastUrl = url; $('#lastUrl').textContent = url; }
-      if (duration !== undefined) { lastDuration = duration; $('#lastDur').textContent = String(duration); }
-      if (offset !== undefined)   { lastOffset = offset; $('#lastOffset').textContent = String(offset); }
-    }
-
-    async function playBlob(blob, nameHint = 'recording.m4a') {
-      const url = URL.createObjectURL(blob);
-      const player = $('#player');
-      player.src = url;
-      player.style.display = 'block';
-
-      // Download link
-      const dl = $('#download');
-      dl.href = url;
-      dl.download = nameHint;
-      dl.textContent = 'Download';
-      dl.style.display = 'inline-block';
-
-      // try autoplay
-      try { await player.play(); } catch (e) { log('player.play blocked:', e?.message || e); }
-
-      log('object URL set on player & download link ready.');
-    }
-
-    // ---- bridge actions ----
-    function startNative() {
-      if (window.webkit?.messageHandlers?.recorder) {
-        window.webkit.messageHandlers.recorder.postMessage({ action: "startNativeRecording" });
-        log('startNativeRecording sent');
+      if (window.nativeAppInfo) {
+        el.innerHTML = `
+          <b>Running inside app</b><br><br>
+          Version: ${window.nativeAppInfo.version}<br>
+          Build: ${window.nativeAppInfo.build}
+        `;
       } else {
-        log('No native bridge');
+        el.innerHTML = `
+          <b>Not running inside the iOS app</b><br><br>
+          No nativeAppInfo found.
+        `;
       }
     }
 
-    function resumeNative() {
-      if (window.webkit?.messageHandlers?.recorder) {
-        window.webkit.messageHandlers.recorder.postMessage({ action: "resumeNativeRecording" });
-        log('resumeNativeRecording sent');
-      } else {
-        log('No native bridge');
-      }
-    }
-
-    function cleanLast() {
-      if (!lastId) { log('No lastId to clean'); return; }
-      if (window.webkit?.messageHandlers?.recorder) {
-        window.webkit.messageHandlers.recorder.postMessage({ action: "cleanNativeRecording", id: lastId });
-        log('cleanNativeRecording sent for', lastId);
-      } else {
-        log('No native bridge');
-      }
-    }
-
-    async function fetchLast() {
-      if (!lastUrl) { log('No lastUrl to fetch'); return; }
-      log('Fetch last ->', lastUrl);
-      try {
-        const blob = await fetchBlobCustom(lastUrl);
-        log('blob fetched:', await describeBlob(blob));
-        await playBlob(blob, `${lastId || 'recording'}.m4a`);
-      } catch (e) {
-        log('ERROR fetching last:', e?.message || e);
-      }
-    }
-
-    function copyLastUrl() {
-      if (!lastUrl) return;
-      navigator.clipboard?.writeText(lastUrl).then(
-        () => log('Last URL copied'),
-        () => log('Clipboard copy failed')
-      );
-    }
-
-    function clearPlayer() {
-      const player = $('#player');
-      const dl = $('#download');
-      if (player.src) { try { URL.revokeObjectURL(player.src); } catch(_){} }
-      player.removeAttribute('src');
-      player.style.display = 'none';
-      dl.removeAttribute('href');
-      dl.style.display = 'none';
-      log('cleared player/download');
-    }
-
-    // ---- native -> web events ----
-    window.onRecordingEvent = async (evt) => {
-      log('[event]', JSON.stringify(evt));
-      $('#status').textContent = evt.type;
-
-      switch (evt.type) {
-        case 'volume':
-          // Expect evt.level in [0,1], evt.avgDb, evt.peakDb (dBFS)
-          if (recordingActive && typeof evt.level === 'number') {
-            pushVolumeSample({
-              level: Math.max(0, Math.min(1, Number(evt.level))),
-              avgDb: evt.avgDb ?? null,
-              peakDb: evt.peakDb ?? null
-            });
-          }
-          break;
-
-        case 'started':
-          recordingActive = true;
-          volData.length = 0; // clear old curve
-          drawVolumeCurve();
-          setLastMeta({ id: evt.id });
-          break;
-
-        case 'resumed':
-          recordingActive = true;
-          // keep existing curve if you want a continuous display
-          setLastMeta({ id: evt.id, offset: evt.offset });
-          break;
-
-        case 'paused':
-        case 'interrupted':
-          recordingActive = false;
-          break;
-
-        case 'finished':
-          recordingActive = false;
-          setLastMeta({ id: evt.id, url: evt.url, duration: evt.duration });
-          // auto fetch & play to verify
-          try {
-            log('finished -> fetching:', evt.url);
-            const blob = await fetchBlobCustom(evt.url);
-            log('blob fetched:', await describeBlob(blob));
-            await playBlob(blob, `${evt.id || 'recording'}.m4a`);
-          } catch (e) {
-            log('ERROR fetching blob:', e?.message || e);
-          }
-          break;
-
-        case 'cancelled':
-        case 'error':
-          recordingActive = false;
-          break;
-
-        case 'cleaned':
-          // reset meta when device file was deleted
-          if (evt.id === lastId) {
-            log('cleaned on device, clearing meta');
-            setLastMeta({ id: '–', url: '–', duration: '–', offset: '–' });
-            lastId = lastUrl = lastDuration = lastOffset = null;
-          }
-          break;
-
-        case 'routeChange':
-          // just log
-          break;
-      }
-    };
-
-    // initial draw
-    drawVolumeCurve();
+    // Run as soon as JS executes
+    showAppInfo();
   </script>
+
 </body>
 </html>
